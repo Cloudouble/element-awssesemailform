@@ -1,0 +1,227 @@
+<style>
+:host {
+    display: none;
+}
+</style>
+<template>
+    <slot></slot>
+</template>
+<script>
+    /* global AWS EventTarget CustomEvent customElements HTMLFormElement */
+    class Awssesemailform extends window.Cloudouble.Element.elements.Aws {
+        
+        static paramFields = ['from', 'to', 'cc', 'bcc', 'replyto', 'return', 'tags', 
+            'template', 'templatehtml', 'templatetext', 'templatesubject', 'templatename', 
+            'message', 'messagehtml', 'messagetext', 'messagesubject'
+        ]
+        
+        constructor() {
+            super()
+            var $this = this
+            $this.addEventListener('signInWithPublicCredentials', event => {
+                $this.Services.SES = new AWS.SES($this.Services.Config)
+            })
+        }
+
+        static get observedAttributes() {
+            return (super.observedAttributes || []).concat('proxy', 'sendstatus', ...this.paramFields)
+        }
+        
+        connectedCallback() {
+            var $this = this
+            $this.addEventListener('submit', event => {
+                event.preventDefault()
+            })
+            var sendNodes = $this.querySelectorAll('[send]')
+            var submitNodes = $this.querySelectorAll('[type="submit"]')
+            var sendSubmitNodes = Array.from(sendNodes).concat(Array.from(submitNodes))
+            sendNodes.forEach(sendElement => {
+                sendElement.addEventListener(sendElement.getAttribute('submit'), event => {
+                    event.preventDefault()
+                    $this.submit()
+                })
+            })
+            submitNodes.forEach(sendElement => {
+                sendElement.addEventListener('click', event => {
+                    event.preventDefault()
+                    $this.submit()
+                })
+            })
+            var setSendStatus = function(nodes, sendstatus, event=null) {
+                if (event && typeof event == 'object' && event.detail && event.detail.err) {
+                    $this.dispatchEvent(new CustomEvent('senderror', {detail: event.detail}))
+                } else {
+                    $this.setAttribute('sendstatus', sendstatus)
+                    nodes.forEach(n => { n.setAttribute('sendstatus', sendstatus) })
+                    if ($this.targetElement) {
+                        $this.targetElement.setAttribute('sendstatus', sendstatus)
+                    }
+                }
+            }
+            ;(['sendstart', 'sendcreatetemplate', 'sendgettemplate', 'sendfinish']).forEach(sendEvent => {
+                $this.addEventListener(sendEvent, event => { setSendStatus(sendSubmitNodes, sendEvent, event) })
+            })
+            $this.addEventListener('senderror', event => { 
+                setSendStatus(sendSubmitNodes,'senderror') 
+            })
+        }
+        
+        submit(namedElements=null) {
+            var $this = this
+            var map = Object.assign({}, ...Array.from(namedElements.constructor.name == 'NodeList' ? namedElements : $this.querySelectorAll('[name]')).filter(el => el.getAttribute('name'))
+                .map(el => ({[el.getAttribute('name')]: el.value})))
+            return $this.send(
+                Object.assign({}, ...Object.keys(map).filter(k => k.slice(0,2)!='${' && k.slice(-1) != '}').map(k => ({[k]: map[k]}))), 
+                Object.assign({}, ...Object.keys(map).filter(k => k.slice(0,2)=='${' && k.slice(-1) == '}').map(k => ({[k.slice(2,-1)]: map[k]})))
+            )
+        }
+        
+        compileSendParams(params={}) {
+            ;(['to', 'cc', 'bcc', 'replyto']).forEach(f => {
+                if (params[f] && typeof params[f] == 'string') {
+                    params[f] = params[f].split(',').map(v => v.trim())
+                }
+            })
+            if (params.tags && typeof params.tags == 'string') {
+                try {
+                    params.tags = JSON.parse(params.tags)
+                    if (!(params.tags && typeof params.tags == 'object')) {
+                        delete params.tags
+                    }
+                } catch(e) {
+                    delete params.tags
+                }
+            }
+            var sendParams = {
+                Destination: {
+                    ToAddresses: params.to
+                }
+            }
+            ;([['from', 'Source'], ['tags', 'Tags'], ['return', 'ReturnPath'], ['replyto', 'ReplyToAddresses']]).forEach(tt => {
+                if (params[tt[0]]) {
+                    if (typeof params[tt[0]] == 'object') {
+                        if (params[tt[0]].constructor.name == 'Array' && params[tt[0]].length) {
+                            sendParams[tt[1]] = params[tt[0]]
+                        } else if (Object.keys(params[tt[0]]).length) {
+                            sendParams[tt[1]] = params[tt[0]]
+                        }
+                    } else {
+                        sendParams[tt[1]] = params[tt[0]]
+                    }
+                }
+            })
+            if (params.cc && typeof params.cc == 'object' && params.cc.constructor.name == 'Array' && params.cc.length) {
+                sendParams.Destination.CcAddresses = params.cc
+            }
+            if (params.bcc && typeof params.bcc == 'object' && params.bcc.constructor.name == 'Array' && params.bcc.length) {
+                sendParams.Destination.BccAddresses = params.bcc
+            }
+            return sendParams
+        }
+        
+        send(templateData={}, params={}) {
+            var $this = this
+            var params = {...Object.assign({}, ...$this.constructor.paramFields.filter(f => $this.getAttribute(f)).map(f => ({[f]: $this.getAttribute(f)}))), ...params}
+            if (!params.template) {
+                delete params.template
+            }
+            $this.dispatchEvent(new CustomEvent('sendstart', {detail: {params: params, templateData: templateData}}))
+            if ((params.message && params.messagesubject) || (templateData.message && !params.template)) {
+                var sendParams = $this.compileSendParams(params)
+                sendParams.Message = {
+                    Body: {
+                        Html: {
+                            Charset: 'UTF-8', 
+                            Data: params.messagehtml || params.message || templateData.message
+                        }, 
+                        Text: {
+                            Charset: 'UTF-8', 
+                            Data: params.messagetext || params.message || templateData.message
+                        }
+                    }, 
+                    Subject: {
+                        Charset: 'UTF-8', 
+                        Data: params.messagesubject || '[no subject]'
+                    }
+                }
+                return new Promise(function(resolve, reject) {
+                    $this.Services.SES.sendEmail(sendParams, function(err, data) {
+                        err ? reject(err) : resolve(data)
+                        $this.dispatchEvent(new CustomEvent('sendfinish', {detail: {params: params, templateData: templateData, sendParams: sendParams, err: err, data: data}}))
+                    })
+                })
+            } else if (params.template) {
+                //send with templating
+                var p = undefined
+                if (params.template.slice(0,8) == 'https:\/\/') {
+                    p = window.Cloudouble.Element.loadJSON(params.template)
+                } else {
+                    try {
+                        p = Promise.resolve(JSON.parse(params.template))
+                    } catch(e) {
+                        p = Promise.resolve(String(params.template))
+                    }
+                }
+                return p.then(templateObj => {
+                    var pp = undefined
+                    if (templateObj && typeof templateObj == 'object' && templateObj.TextPart && templateObj.SubjectPart) {
+                        templateObj.TemplateName = templateObj.TemplateName || templateObj.SubjectPart
+                        templateObj.HtmlPart = templateObj.HtmlPart || templateObj.TextPart
+                        pp = new Promise(function(resolve, reject) {
+                            $this.Services.SES.createTemplate({Template: templateObj}, function(err, data) {
+                                err ? reject(err) : resolve(templateObj.TemplateName)
+                                $this.dispatchEvent(new CustomEvent('sendcreatetemplate', {detail: {params: params, templateData: templateData, templateObj: templateObj, err: err, data: data}}))
+                            })
+                        })
+                    } else if (templateObj && typeof templateObj == 'string') {
+                        pp = new Promise(function(resolve, reject) {
+                            $this.Services.SES.getTemplate({TemplateName: templateObj}, function(err, data) {
+                                (!err && data && data.Template) ? resolve(data.Template.TemplateName) : reject(err || data)
+                                $this.dispatchEvent(new CustomEvent('sendgettemplate', {detail: {params: params, templateData: templateData, templateObj: data.Template, err: err, data: data}}))
+                            })
+                        })
+                    } else {
+                        pp = Promise.resolve(null)
+                    }
+                    return pp.then(templateName => {
+                        var sendParams = $this.compileSendParams(params)
+                        sendParams.Template = templateName
+                        sendParams.TemplateData = templateData
+                        return new Promise(function(resolve, reject) {
+                            $this.Services.SES.sendTemplatedEmail(sendParams, function(err, data) {
+                                (err) ? reject(err) : resolve(data)
+                                $this.dispatchEvent(new CustomEvent('sendfinish', {detail: {params: params, templateData: templateData, sendParams: sendParams, templateName: templateName, err: err, data: data}}))
+                            })
+                        })
+                    }).catch(err => {
+                        console.log('awssesemailform.html line 197', err)
+                    })
+                }).catch(err => {
+                    console.log('awssesemailform.html line 200', err)
+                })
+            } else {
+                return Promise.resolve(null)
+            }
+        }
+        
+        proxy($this, value) {
+            if (value) {
+                $this.setAttribute('style', 'display: none;')
+				$this.targetElement = document.querySelector(value)
+				if ($this.targetElement) {
+					$this.targetElement.addEventListener('submit', event => {
+						event.preventDefault()
+						$this.submit($this.targetElement.querySelectorAll('[name]'))
+					})
+				}
+            } else {
+                $this.removeAttribute('style')
+            }
+        }
+        
+        sendstatus($this, value) {
+            return value
+        }
+        
+    }
+</script>
