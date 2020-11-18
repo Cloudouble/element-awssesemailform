@@ -105,8 +105,6 @@ CSS-based styling to show send progress to end users.
 
 [Amazon Cognito Identity Pools](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-identity.html)
 
-[Amazon Cognito Identity Pools](https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-identity.html)
-
 [Amazon SES](https://docs.aws.amazon.com/ses)
 
 SES Merge Field Info: [Advanced email personalization](https://docs.aws.amazon.com/ses/latest/DeveloperGuide/send-personalized-email-advanced.html)
